@@ -85,7 +85,11 @@
     lat: 38.5862,
     lng: -90.5323,
     method: "ISNA", // Fajr 15° / Isha 15° / standard Asr
-    names: ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha"],
+    names: ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha", "Jumuah"],
+    // Iqama in minutes after each Athan — adjust to Al Manara's actual schedule
+    iqama: { Fajr: 20, Dhuhr: 20, Jumuah: 5, Asr: 20, Maghrib: 10, Isha: 25 },
+    // Friday Jumuah fixed schedule (Chicago time) — adjust as needed
+    jumuah: { time: "13:15", day: 5 }, // day 5 = Friday (Sun=0)
     city: "Ballwin",
     state: "Missouri",
     country: "US",
@@ -264,9 +268,21 @@
       return PrayerMath.compute(date, PRAYER_CONFIG.lat, PRAYER_CONFIG.lng, tz);
     }
 
+    function isJumuahDay(date) {
+      const d = new Date(date.toLocaleString("en-US", { timeZone: "America/Chicago" }));
+      return d.getDay() === PRAYER_CONFIG.jumuah.day;
+    }
+
+    function jumuahHours(date) {
+      const parts = String(PRAYER_CONFIG.jumuah.time).split(":");
+      return (+parts[0] % 24) + (+parts[1] || 0) / 60;
+    }
+
     function getTimes(date) {
-      if (schedule) return schedule;              // live Aladhan (local Chicago time)
-      return buildTimes(date);
+      const base = schedule ? { ...schedule } : buildTimes(date);
+      base.Jumuah = jumuahHours(date); // fixed time, shown daily
+      base._isFriday = isJumuahDay(date);
+      return base;
     }
 
     function tick() {
@@ -274,11 +290,14 @@
       const times = getTimes(date);
       const dates = prayerDatesForToday(times);
       const nowH = chicagoNowHours(date);
+      const isFriday = times._isFriday === true;
 
       // determine next prayer
       let next = null;
       let nextDate = null;
       PRAYER_CONFIG.names.forEach((name) => {
+        if (name === "Dhuhr" && isFriday) return;   // Dhuhr congregation is Jumuah on Friday
+        if (name === "Jumuah" && !isFriday) return; // Jumuah counts only on Friday
         const tH = times[name];
         if (tH > nowH + 0.0005 && !next) { next = name; nextDate = dates[name]; }
       });
@@ -288,14 +307,29 @@
         PRAYER_CONFIG.names.forEach((name, i) => {
           let tile = tilesWrap.children[i];
           if (!tile) return;
-          tile.className = "pray-tile glass-soft " +
-            (next === name ? "is-next" : (times[name] < nowH ? "is-past" : ""));
-          const tTime = tile.querySelector(".t-time");
+          const isJumu = name === "Jumuah";
+          const tH = times[name];
+          const isPast = !isFriday && isJumu ? false : tH < nowH;
+          tile.className = "pray-tile glass-soft" +
+            (next === name ? " is-next" : (isPast ? " is-past" : "")) +
+            (isJumu ? " is-jumuah" : "");
+          const tTime = tile.querySelector("[data-ath]");
+          const tIqa = tile.querySelector("[data-iqa]");
           const tState = tile.querySelector(".t-state");
+          const labels = tile.querySelectorAll(".t-label");
+          if (isJumu) {
+            if (labels.length >= 2) {
+              labels[0].textContent = "Jumuah";
+              labels[1].textContent = "Salah";
+            }
+          }
+          const iqMin = PRAYER_CONFIG.iqama[name] || 0;
           if (tTime) tTime.textContent = fmtTime(dates[name]);
+          if (tIqa) tIqa.textContent = fmtTime(new Date(dates[name].getTime() + iqMin * 60000));
           if (tState) {
-            if (next === name) tState.textContent = "Next";
-            else if (times[name] < nowH) tState.textContent = "Passed";
+            if (!isFriday && isJumu) tState.textContent = "Friday only";
+            else if (next === name) tState.textContent = "Next";
+            else if (isPast) tState.textContent = "Passed";
             else tState.textContent = "Upcoming";
           }
         });
@@ -304,6 +338,11 @@
       if (next && nextDate) {
         if (nextNameEl) nextNameEl.textContent = next;
         if (nextTimeEl) nextTimeEl.textContent = fmtTime(nextDate);
+        const nextIqamaEl = root.querySelector("[data-next-iqama]");
+        if (nextIqamaEl) {
+          const iqMin = PRAYER_CONFIG.iqama[next] || 0;
+          nextIqamaEl.textContent = fmtTime(new Date(nextDate.getTime() + iqMin * 60000));
+        }
         const countdownEl = root.querySelector("[data-countdown]");
         renderCountdown(nextDate.getTime() - Date.now(), countdownEl);
       }
@@ -323,9 +362,11 @@
         if (t) {
           schedule = {};
           PRAYER_CONFIG.names.forEach((n) => {
+            if (n === "Jumuah") return;            // Jumuah uses its own fixed schedule
             const raw = t[n] || "";
             const parts = raw.split(":");
-            schedule[n] = +parts[0] + (+parts[1] || 0) / 60;
+            const v = +parts[0] + (+parts[1] || 0) / 60;
+            if (!isNaN(v)) schedule[n] = v;
           });
         }
       })

@@ -387,16 +387,54 @@ h1, h2, h3, h4, h5 {
 .cell-glass:hover { border-color: rgba(198, 154, 43, 0.55); background: rgba(198, 154, 43, 0.06); }
 
 /* ---------- Prayer widget ---------- */
-.pray-tile { border-radius: var(--radius-md); padding: 1rem; text-align: center; }
-.pray-tile .t-name { font-family: var(--font-display); font-weight: 600; color: var(--gold-deep); font-size: 0.9rem; letter-spacing: 0.05em; text-transform: uppercase; }
-.pray-tile .t-time { font-family: var(--font-display); color: var(--ink); font-size: 1.25rem; font-weight: 700; }
+.pray-tile {
+  border-radius: var(--radius-md);
+  padding: 1rem 0.85rem;
+  text-align: center;
+  min-width: 0;
+  overflow: hidden;
+}
+.pray-tile .t-name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--gold-deep);
+  font-size: 0.85rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pray-tile .t-times { display: flex; flex-direction: column; gap: 0.2rem; margin-top: 0.35rem; }
+.pray-tile .t-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+  min-width: 0;
+}
+.pray-tile .t-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--gold-deep);
+  opacity: 0.85;
+}
+.pray-tile .t-time { font-family: var(--font-display); color: var(--ink); font-size: 1.05rem; font-weight: 700; }
+.pray-tile .t-iqa { font-family: var(--font-display); color: var(--green); font-size: 1.05rem; font-weight: 700; }
 .pray-tile.is-next {
   background: linear-gradient(150deg, rgba(63, 163, 77, 0.18), rgba(76, 175, 80, 0.05));
   border: 1px solid rgba(63, 163, 77, 0.65);
   box-shadow: 0 10px 30px rgba(63, 163, 77, 0.2);
 }
+.pray-tile.is-jumuah {
+  background: linear-gradient(150deg, rgba(212, 163, 43, 0.16), rgba(255, 255, 255, 0.5));
+  border: 1px dashed rgba(198, 154, 43, 0.75);
+}
 .pray-tile.is-next .t-time { color: var(--green); }
-.pray-tile.is-past .t-time, .pray-tile.is-past .tray { opacity: 0.45; }
+.pray-tile.is-past .t-time, .pray-tile.is-past .t-iqa, .pray-tile.is-past .tray { opacity: 0.45; }
 
 .countdown-field { border-radius: var(--radius-md); }
 .countdown-num { font-family: var(--font-display); font-weight: 800; color: var(--ink); }
