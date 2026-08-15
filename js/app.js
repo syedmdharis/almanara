@@ -78,304 +78,371 @@
   })();
 
   /* ============================================================
-     PRAYER TIMES ENGINE (ISNA method) + live countdown widget
-     Location: Ballwin, Missouri — lat 38.5862, lon -90.5323
-     ============================================================ */
-  const PRAYER_CONFIG = {
-    lat: 38.5862,
-    lng: -90.5323,
-    method: "ISNA", // Fajr 15° / Isha 15° / standard Asr
-    names: ["Fajr", "Dhuhr", "Asr", "Maghrib", "Isha", "Jumuah"],
-    // Iqama in minutes after each Athan — adjust to Al Manara's actual schedule
-    iqama: { Fajr: 20, Dhuhr: 20, Jumuah: 5, Asr: 20, Maghrib: 10, Isha: 25 },
-    // Friday Jumuah fixed schedule (Chicago time) — adjust as needed
-    jumuah: { time: "13:15", day: 5 }, // day 5 = Friday (Sun=0)
-    city: "Ballwin",
-    state: "Missouri",
-    country: "US",
-  };
+     LIVE PRAYER TIMES
+     Two sources, both from the masjid's Firebase Realtime
+     Database — the same ones the official prayer portal app
+     (masjid-almanara.web.app) uses:
 
-  const PrayerMath = (function () {
+       • ADHAN  — computed astronomically from prayerConfig
+                  (coordinates + calculation method/angles), the
+                  same way the official app calculates it.
+       • IQAMA  — taken from the published prayerTimings entries
+                  (Fixed = clock time, Variable = offset applied
+                  to the computed time).
+
+     Ballwin, Missouri uses America/Chicago (CST/CDT).
+     ============================================================ */
+  (function initPrayerWidget() {
+    const root = $("#prayerWidget");
+    const live = root && root.querySelector("[data-prayer-live]");
+    if (!live) return;
+
+    const grid = live.querySelector("[data-prayer-grid]");
+    const loader = live.querySelector("[data-prayer-loader]");
+    const fallback = live.querySelector("[data-prayer-fallback]");
+    const updatedEl = root.querySelector("[data-prayer-updated]");
+    const DB_URL =
+      "https://masjid-almanara-default-rtdb.firebaseio.com/conf_web.json";
+
+    const PRAYERS = [
+      { key: "fajr", label: "Fajr" },
+      { key: "dhuhr", label: "Dhuhr" },
+      { key: "asr", label: "Asr" },
+      { key: "maghrib", label: "Maghrib" },
+      { key: "isha", label: "Isha" },
+      { key: "jumuah", label: "Jumu\u2019ah" },
+    ];
+
+    /* ---- PrayTimes v2.5 (praytimes.org) — the same algorithm used by the
+           reference Al Manara app and aladhan.com, so the site matches to the
+           minute. ---- */
     const DR = Math.PI / 180;
-    const fixAngle = (a) => ((a % 360) + 360) % 360;
-    const fixHour = (h) => ((h % 24) + 24) % 24;
     const dsin = (d) => Math.sin(d * DR);
     const dcos = (d) => Math.cos(d * DR);
     const dtan = (d) => Math.tan(d * DR);
-    const dasin = (x) => (Math.asin(Math.max(-1, Math.min(1, x))) / DR);
-    const dacos = (x) => (Math.acos(Math.max(-1, Math.min(1, x))) / DR);
-    const datan = (x) => (Math.atan(x) / DR);
-    const datan2 = (y, x) => (Math.atan2(y, x) / DR);
+    const darcsin = (x) => Math.asin(Math.max(-1, Math.min(1, x))) / DR;
+    const darccos = (x) => Math.acos(Math.max(-1, Math.min(1, x))) / DR;
+    const darctan = (x) => Math.atan(x) / DR;
+    const darccot = (x) => Math.atan(1 / x) / DR;
+    const darctan2 = (y, x) => Math.atan2(y, x) / DR;
+    const dfix = (a, b) => {
+      a -= b * Math.floor(a / b);
+      return a < 0 ? a + b : a;
+    };
+    const dfixAngle = (a) => dfix(a, 360);
+    const dfixHour = (a) => dfix(a, 24);
 
-    function sunPosition(jd) {
-      const D = jd - 2451545.0;
-      const g = fixAngle(357.529 + 0.98560028 * D);
-      const q = fixAngle(280.459 + 0.98564736 * D);
-      const L = fixAngle(q + 1.915 * dsin(g) + 0.020 * dsin(2 * g));
-      const e = 23.439 - 0.00000036 * D;
-      const RA = datan2(dcos(e) * dsin(L), dcos(L));
-      const decl = dasin(dsin(e) * dsin(L));
-      const eqTime = q / 15 - RA / 15;
-      return { declination: decl, equation: eqTime };
-    }
-
-    function julian(y, m, d) {
-      if (m <= 2) { y -= 1; m += 12; }
-      const A = Math.floor(y / 100);
+    function dJulian(year, month, day) {
+      if (month <= 2) {
+        year -= 1;
+        month += 12;
+      }
+      const A = Math.floor(year / 100);
       const B = 2 - A + Math.floor(A / 4);
-      return Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + d + B - 1524.5;
+      return (
+        Math.floor(365.25 * (year + 4716)) +
+        Math.floor(30.6001 * (month + 1)) + day + B - 1524.5
+      );
     }
 
-    function compute(date, lat, lng, timeZone) {
-      const jd0 = julian(date.getFullYear(), date.getMonth() + 1, date.getDate());
-      const sp = sunPosition(jd0);
-      const decl = sp.declination;
+    function dSunPosition(jd) {
+      const D = jd - 2451545.0;
+      const g = dfixAngle(357.529 + 0.98560028 * D);
+      const q = dfixAngle(280.459 + 0.98564736 * D);
+      const L = dfixAngle(q + 1.915 * dsin(g) + 0.02 * dsin(2 * g));
+      const e = 23.439 - 0.00000036 * D;
+      const RA = darctan2(dcos(e) * dsin(L), dcos(L)) / 15; // hours
+      const eq = q / 15 - dfixHour(RA); // equation of time, hours
+      const decl = darcsin(dsin(e) * dsin(L)); // degrees
+      return { declination: decl, equation: eq };
+    }
 
-      const noon = fixHour(12 - sp.equation + (timeZone - lng / 15));
-
-      const hourAngle = (angle) => {
-        const num = -dsin(angle) - dsin(decl) * dsin(lat);
-        const den = dcos(decl) * dcos(lat);
-        return dacos(num / den) / 15;
+    /* Ported PrayTimes v2.5 computeTimes — prayer times in hours (local). */
+    function prayTimesDay(y, mo, d, lat, lng, elv, timeZone, params) {
+      const jDate = dJulian(y, mo, d) - lng / 360;
+      const numIterations = 2;
+      const riseSetAngle = () => 0.833 + 0.0347 * Math.sqrt(elv);
+      const sunPosAt = (time) => dSunPosition(jDate + time);
+      const midDay = (time) => dfixHour(12 - sunPosAt(time).equation);
+      const sunAngleTime = (angle, time, direction) => {
+        const decl = sunPosAt(time).declination;
+        const noon = midDay(time);
+        const t =
+          (1 / 15) *
+          darccos(
+            (-dsin(angle) - dsin(decl) * dsin(lat)) / (dcos(decl) * dcos(lat))
+          );
+        return noon + (direction === "ccw" ? -t : t);
       };
+      const asrTime = (factor, time) => {
+        const decl = sunPosAt(time).declination;
+        const angle = -darccot(factor + dtan(Math.abs(lat - decl)));
+        return sunAngleTime(angle, time);
+      };
+      const dayPortion = (times) => {
+        const r = {};
+        for (const k in times) r[k] = times[k] / 24;
+        return r;
+      };
+      const value = (p) => (typeof p === "number" ? p : parseFloat(String(p)));
+      const isMin = (p) => typeof p === "string" && /min/i.test(p);
+      const computeIter = (times) => ({
+        imsak: sunAngleTime(value(params.imsak), times.imsak, "ccw"),
+        fajr: sunAngleTime(value(params.fajr), times.fajr, "ccw"),
+        sunrise: sunAngleTime(riseSetAngle(), times.sunrise, "ccw"),
+        dhuhr: midDay(times.dhuhr),
+        asr: asrTime(params.asr === "Hanafi" ? 2 : 1, times.asr),
+        sunset: sunAngleTime(riseSetAngle(), times.sunset),
+        maghrib: sunAngleTime(value(params.maghrib), times.maghrib),
+        isha: sunAngleTime(value(params.isha), times.isha),
+      });
+      const adjustTimes = (times) => {
+        for (const k in times) times[k] += timeZone - lng / 15;
+        if (isMin(params.maghrib))
+          times.maghrib = times.sunset + value(params.maghrib) / 60;
+        if (isMin(params.isha))
+          times.isha = times.maghrib + value(params.isha) / 60;
+        times.dhuhr += value(params.dhuhr) / 60;
+        return times;
+      };
+      let times = {
+        imsak: 5,
+        fajr: 5,
+        sunrise: 6,
+        dhuhr: 12,
+        asr: 13,
+        sunset: 18,
+        maghrib: 18,
+        isha: 18,
+      };
+      for (let i = 1; i <= numIterations; i++) {
+        times = computeIter(dayPortion(times));
+      }
+      return adjustTimes(times);
+    }
 
-      const fajrAngle = 15;      // ISNA
-      const ishaAngle = 15;      // ISNA
-      const sunriseAngle = 0.833;
+    /* Calculation methods — mirror adhan-dart's presets. Methods selected by
+       the masjid via prayerConfig.params. */
+    const METHOD_PARAMS = {
+      muslim_world_league: { fajr: 18, isha: 17, dhuhrMin: 1 },
+      muslim: { fajr: 18, isha: 17, dhuhrMin: 1 },
+      egyptian: { fajr: 19.5, isha: 17.5, dhuhrMin: 1 },
+      karachi: { fajr: 18, isha: 18, dhuhrMin: 1 },
+      umm_al_qura: { fajr: 18.5, ishaInterval: 90 },
+      dubai: {
+        fajr: 18.2,
+        isha: 18.2,
+        dhuhrMin: 1,
+        adj: { fajr: -3, sunrise: 3, dhuhr: 3, asr: 3, maghrib: 3 },
+      },
+      moon_sighting_committee: { fajr: 18, isha: 18, maghribMin: 3 },
+      mslc: { fajr: 18, isha: 18, maghribMin: 3 },
+      north_america: { fajr: 15, isha: 15, dhuhrMin: 1 },
+      north_america_isna: { fajr: 15, isha: 15, dhuhrMin: 1 },
+      isna: { fajr: 15, isha: 15, dhuhrMin: 1 },
+      kuwait: { fajr: 18, isha: 17.5 },
+      qatar: { fajr: 18, ishaInterval: 90 },
+      singapore: { fajr: 20, isha: 18, dhuhrMin: 1 },
+      turkey: {
+        fajr: 18,
+        isha: 17,
+        adj: { fajr: -7, sunrise: -7, dhuhr: 5, asr: 4, maghrib: 7 },
+      },
+      tehran: { fajr: 17.7, isha: 14, maghribMin: 4.5 },
+      other: { other: true },
+    };
 
-      const tFajr = hourAngle(fajrAngle);
-      const tSunrise = hourAngle(sunriseAngle);
-      const tSunset = hourAngle(sunriseAngle);
+    function resolveMethod(cfg) {
+      const fajrAngle = Number(cfg.fajrAngle);
+      const ishaAngle = Number(cfg.ishaAngle);
+      const custom = {
+        fajr: fajrAngle || 15,
+        isha: ishaAngle || 15,
+        ishaInterval: Number(cfg.ishaInterval) || 0,
+      };
+      /* Explicit per-prayer angles in the config take precedence over a
+         named preset (e.g. prayerConfig.fajrAngle/ishaAngle = 15/15 → ISNA). */
+      if (fajrAngle || ishaAngle) return custom;
+      const name = String(cfg.params || "").trim().toLowerCase();
+      const m = METHOD_PARAMS[name] || METHOD_PARAMS.umm_al_qura;
+      return m.other ? custom : m;
+    }
 
-      // Asr (standard / Shafi'i): factor = 1
-      const asrFactor = 1 + dtan(Math.abs(lat - decl));
-      const tAsr = datan(1 / asrFactor) / 15;
-
-      const dhuhrMin = 5 / 60;    // 5 min after solar noon
-      const maghribMin = 0;
-
-      const tIsha = hourAngle(ishaAngle);
-
-      const h = (v) => fixHour(noon + v);
-
+    /* Computed adhan times (hours, decimal) for the given Chicago date. */
+    function computeAdhan(y, mo, d, cfg) {
+      const lat = Number(cfg.coordinatesN);
+      const lng = Number(cfg.coordinatesW);
+      const tzName = String(cfg.timeZone || "America/Chicago");
+      let off = 0;
+      if (/^-?\d/.test(tzName)) {
+        off = parseFloat(tzName);
+      } else {
+        // Offset in hours east of UTC for this calendar date (handles CST/CDT).
+        const probe = new Date(Date.UTC(y, mo - 1, d, 12));
+        const p = Object.fromEntries(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: tzName,
+            hour12: false,
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          }).formatToParts(probe).map((x) => [x.type, x.value])
+        );
+        let hh = +p.hour;
+        if (hh === 24) hh = 0;
+        const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, hh, +p.minute, +p.second);
+        off = (asUtc - probe.getTime()) / 3600000;
+      }
+      const m = resolveMethod(cfg);
+      const shadow = String(cfg.madhab || "shafi").toLowerCase() === "hanafi" ? 2 : 1;
+      const params = {
+        imsak: "10 min",
+        fajr: m.fajr,
+        isha: m.ishaInterval > 0 ? String(m.ishaInterval) + " min" : m.isha,
+        maghrib: m.maghribMin ? String(m.maghribMin) + " min" : "0 min",
+        dhuhr: m.dhuhrMin ? String(m.dhuhrMin) + " min" : "0 min",
+        asr: shadow === 2 ? "Hanafi" : "Standard",
+      };
+      const t = prayTimesDay(y, mo, d, lat, lng, 0, off, params);
+      const adj = m.adj || {};
+      const min = (v) => (v || 0) / 60;
       return {
-        Fajr: h(-tFajr),
-        Sunrise: h(-tSunrise),
-        Dhuhr: h(dhuhrMin),
-        Asr: h(tAsr),
-        Maghrib: h(tSunset + maghribMin / 60),
-        Isha: h(tIsha),
+        fajr: dfixHour(t.fajr + min(adj.fajr)),
+        dhuhr: dfixHour(t.dhuhr + min(adj.dhuhr)),
+        asr: dfixHour(t.asr + min(adj.asr)),
+        maghrib: dfixHour(t.maghrib + min(adj.maghrib)),
+        isha: dfixHour(t.isha + min(adj.isha)),
       };
     }
 
-    return { compute: compute };
-  })();
-
-  /* Chicago (America/Chicago) offset in hours east of UTC */
-  function chicagoOffsetHours(date) {
-    const fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/Chicago",
-      hour12: false,
-      year: "numeric", month: "2-digit", day: "2-digit",
-      hour: "2-digit", minute: "2-digit", second: "2-digit",
-    });
-    const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
-    let h = parseInt(parts.hour, 10);
-    if (h === 24) h = 0;
-    const wallUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, h, +parts.minute, +parts.second);
-    return (wallUtc - date.getTime()) / 3600000;
-  }
-
-  /* Chicago wall-clock reading of "now" as fractional hours */
-  function chicagoNowHours(date) {
-    const fmt = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/Chicago", hour12: false,
-      hour: "2-digit", minute: "2-digit", second: "2-digit",
-    });
-    const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
-    const h = parseInt(parts.hour, 10) === 24 ? 0 : parseInt(parts.hour, 10);
-    return h + (+parts.minute) / 60 + (+parts.second) / 3600;
-  }
-
-  function prayerDatesForToday(times) {
-    const now = new Date();
-    const offset = chicagoOffsetHours(now);
-    const chicagoNow = new Date(now.toLocaleString("en-US", { timeZone: "America/Chicago" }));
-    const utcMid = Date.UTC(
-      chicagoNow.getUTCFullYear(),
-      chicagoNow.getUTCMonth(),
-      chicagoNow.getUTCDate()
-    );
-    const chicagoMidnight = utcMid + -offset * 3600000;
-    const out = {};
-    Object.keys(times).forEach((k) => {
-      out[k] = new Date(chicagoMidnight + times[k] * 3600000);
-    });
-    return out;
-  }
-
-  function fmtTime(date) {
-    return new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", hour12: true }).format(date);
-  }
-
-  function pad(n) { return String(n).padStart(2, "0"); }
-
-  function renderCountdown(ms, el) {
-    if (!el) return;
-    const total = Math.max(0, Math.floor(ms / 1000));
-    const hh = Math.floor(total / 3600);
-    const mm = Math.floor((total % 3600) / 60);
-    const ss = total % 60;
-    const hEl = el.querySelector("[data-cd=hours]");
-    const mEl = el.querySelector("[data-cd=minutes]");
-    const sEl = el.querySelector("[data-cd=seconds]");
-    if (hEl) hEl.textContent = pad(hh);
-    if (mEl) mEl.textContent = pad(mm);
-    if (sEl) sEl.textContent = pad(ss);
-  }
-
-  function initPrayerWidget() {
-    const root = $("#prayerWidget");
-    if (!root) return;
-
-    // Static Gregorian + Hijri dates
-    const now = new Date();
-    const gregEl = root.querySelector("[data-gregorian]");
-    const hijriEl = root.querySelector("[data-hijri]");
-    if (gregEl) {
-      gregEl.textContent = new Intl.DateTimeFormat("en-US", {
-        weekday: "long", month: "long", day: "numeric", year: "numeric",
-      }).format(now);
-    }
-    if (hijriEl) {
-      try {
-        hijriEl.textContent = new Intl.DateTimeFormat("en-US-u-ca-islamic-umalqura", {
-          day: "numeric", month: "long", year: "numeric",
-        }).format(now);
-      } catch (e) {
-        hijriEl.textContent = "";
-      }
+    function fmtClock(hours) {
+      const total = Math.floor(hours * 60) % (24 * 60);
+      const hh = Math.floor(total / 60);
+      const mm = total % 60;
+      const ap = hh >= 12 ? "PM" : "AM";
+      return ((hh % 12) || 12) + ":" + String(mm).padStart(2, "0") + " " + ap;
     }
 
-    const tilesWrap = root.querySelector("[data-prayer-tiles]");
-    const nextNameEl = root.querySelector("[data-next-name]");
-    const nextTimeEl = root.querySelector("[data-next-time]");
-
-    let schedule = null;
-
-    function buildTimes(date) {
-      const tz = chicagoOffsetHours(date);
-      return PrayerMath.compute(date, PRAYER_CONFIG.lat, PRAYER_CONFIG.lng, tz);
+    function hoursToMinutes(hours) {
+      return Math.floor(hours * 60) % (24 * 60);
     }
 
-    function isJumuahDay(date) {
-      const d = new Date(date.toLocaleString("en-US", { timeZone: "America/Chicago" }));
-      return d.getDay() === PRAYER_CONFIG.jumuah.day;
+    function clockToMinutes(timeStr) {
+      const m = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+      if (!m) return null;
+      let h = parseInt(m[1], 10) % 12;
+      if (/pm/i.test(m[3])) h += 12;
+      return (h * 60 + parseInt(m[2], 10)) % (24 * 60);
     }
 
-    function jumuahHours(date) {
-      const parts = String(PRAYER_CONFIG.jumuah.time).split(":");
-      return (+parts[0] % 24) + (+parts[1] || 0) / 60;
+    function minutesToClock(min) {
+      const total = ((min % (24 * 60)) + 24 * 60) % (24 * 60);
+      const hh = Math.floor(total / 60);
+      const mm = total % 60;
+      const ap = hh >= 12 ? "PM" : "AM";
+      return ((hh % 12) || 12) + ":" + String(mm).padStart(2, "0") + " " + ap;
     }
 
-    function getTimes(date) {
-      const base = schedule ? { ...schedule } : buildTimes(date);
-      base.Jumuah = jumuahHours(date); // fixed time, shown daily
-      base._isFriday = isJumuahDay(date);
-      return base;
-    }
-
-    function tick() {
-      const date = new Date();
-      const times = getTimes(date);
-      const dates = prayerDatesForToday(times);
-      const nowH = chicagoNowHours(date);
-      const isFriday = times._isFriday === true;
-
-      // determine next prayer
-      let next = null;
-      let nextDate = null;
-      PRAYER_CONFIG.names.forEach((name) => {
-        if (name === "Dhuhr" && isFriday) return;   // Dhuhr congregation is Jumuah on Friday
-        if (name === "Jumuah" && !isFriday) return; // Jumuah counts only on Friday
-        const tH = times[name];
-        if (tH > nowH + 0.0005 && !next) { next = name; nextDate = dates[name]; }
-      });
-
-      // render tiles
-      if (tilesWrap) {
-        PRAYER_CONFIG.names.forEach((name, i) => {
-          let tile = tilesWrap.children[i];
-          if (!tile) return;
-          const isJumu = name === "Jumuah";
-          const tH = times[name];
-          const isPast = !isFriday && isJumu ? false : tH < nowH;
-          tile.className = "pray-tile glass-soft" +
-            (next === name ? " is-next" : (isPast ? " is-past" : "")) +
-            (isJumu ? " is-jumuah" : "");
-          const tTime = tile.querySelector("[data-ath]");
-          const tIqa = tile.querySelector("[data-iqa]");
-          const tState = tile.querySelector(".t-state");
-          const labels = tile.querySelectorAll(".t-label");
-          if (isJumu) {
-            if (labels.length >= 2) {
-              labels[0].textContent = "Jumuah";
-              labels[1].textContent = "Salah";
-            }
-          }
-          const iqMin = PRAYER_CONFIG.iqama[name] || 0;
-          if (tTime) tTime.textContent = fmtTime(dates[name]);
-          if (tIqa) tIqa.textContent = fmtTime(new Date(dates[name].getTime() + iqMin * 60000));
-          if (tState) {
-            if (!isFriday && isJumu) tState.textContent = "Friday only";
-            else if (next === name) tState.textContent = "Next";
-            else if (isPast) tState.textContent = "Passed";
-            else tState.textContent = "Upcoming";
-          }
-        });
+    function renderTile(prayer, entry, adhanHours, data) {
+      /* Jumu'ah has no astronomical adhan — show the published khutbah/salah. */
+      if (prayer.key === "jumuah") {
+        const khutbah =
+          Array.isArray(entry) && entry[0] === true
+            ? String(entry[1] ?? "").trim()
+            : "";
+        const j2 = Array.isArray(data.jumuah2) ? data.jumuah2 : null;
+        const salah =
+          j2 && j2[0] === true ? String(j2[1] ?? "").trim() : "";
+        const khutbahTxt =
+          khutbah && clockToMinutes(khutbah) != null ? khutbah : "1:10 PM";
+        const salahTxt =
+          salah && clockToMinutes(salah) != null ? salah : "2:00 PM";
+        return (
+          '<div class="prayer-tile"><p class="prayer-tile-name">' +
+          prayer.label +
+          '</p><div class="prayer-tile-rows">' +
+          '<p class="prayer-tile-row"><span>Khutbah</span><span>' +
+          khutbahTxt +
+          "</span></p>" +
+          '<p class="prayer-tile-row"><span>Salah</span><span>' +
+          salahTxt +
+          "</span></p>" +
+          "</div></div>"
+        );
       }
 
-      if (next && nextDate) {
-        if (nextNameEl) nextNameEl.textContent = next;
-        if (nextTimeEl) nextTimeEl.textContent = fmtTime(nextDate);
-        const nextIqamaEl = root.querySelector("[data-next-iqama]");
-        if (nextIqamaEl) {
-          const iqMin = PRAYER_CONFIG.iqama[next] || 0;
-          nextIqamaEl.textContent = fmtTime(new Date(nextDate.getTime() + iqMin * 60000));
+      const adhanMin = hoursToMinutes(adhanHours[prayer.key]);
+      const adhanTxt = fmtClock(adhanHours[prayer.key]);
+
+      /* Iqama: Fixed → published clock string; Variable → computed + offset. */
+      let iqamaTxt = adhanTxt;
+      if (Array.isArray(entry) && entry.length >= 2) {
+        const fixed = entry[0] === true;
+        const raw = String(entry[1] ?? "").trim();
+        if (fixed) {
+          if (clockToMinutes(raw) != null) iqamaTxt = raw;
+        } else if (/^\d+(\.\d+)?$/.test(raw)) {
+          iqamaTxt = minutesToClock(adhanMin + Math.round(parseFloat(raw)));
         }
-        const countdownEl = root.querySelector("[data-countdown]");
-        renderCountdown(nextDate.getTime() - Date.now(), countdownEl);
       }
+
+      return (
+        '<div class="prayer-tile"><p class="prayer-tile-name">' +
+        prayer.label +
+        '</p><div class="prayer-tile-rows">' +
+        '<p class="prayer-tile-row"><span>Adhan</span><span>' +
+        adhanTxt +
+        "</span></p>" +
+        '<p class="prayer-tile-row"><span>Iqama</span><span>' +
+        iqamaTxt +
+        "</span></p>" +
+        "</div></div>"
+      );
     }
 
-    // Try to enhance with live API (Aladhan) when online; always fall back to local calc.
-    fetch(
-      "https://api.aladhan.com/v1/timingsByCity?city=" +
-        encodeURIComponent(PRAYER_CONFIG.city) +
-        "&state=" + encodeURIComponent(PRAYER_CONFIG.state) +
-        "&country=" + encodeURIComponent(PRAYER_CONFIG.country) +
-        "&method=2"
-    )
+    function showFallback() {
+      if (loader) loader.classList.add("is-hidden");
+      if (fallback) fallback.removeAttribute("hidden");
+    }
+
+    fetch(DB_URL)
       .then((r) => r.json())
-      .then((json) => {
-        const t = json && json.data && json.data.timings;
-        if (t) {
-          schedule = {};
-          PRAYER_CONFIG.names.forEach((n) => {
-            if (n === "Jumuah") return;            // Jumuah uses its own fixed schedule
-            const raw = t[n] || "";
-            const parts = raw.split(":");
-            const v = +parts[0] + (+parts[1] || 0) / 60;
-            if (!isNaN(v)) schedule[n] = v;
-          });
-        }
-      })
-      .catch(() => {})
-      .finally(() => {
-        tick();
-        setInterval(tick, 1000);
-      });
-  }
+      .then((data) => {
+        if (!data) throw new Error("empty");
+        const config = data.prayerConfig || {};
+        const timings = data.prayerTimings || {};
 
-  initPrayerWidget();
+        const now = new Date();
+        const wall = Object.fromEntries(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone: "America/Chicago",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).formatToParts(now).map((x) => [x.type, x.value])
+        );
+        const adhan = computeAdhan(
+          +wall.year,
+          +wall.month,
+          +wall.day,
+          Object.assign({}, config, {
+            timeZone: String(config.timeZone || "America/Chicago"),
+          })
+        );
+
+        grid.innerHTML = PRAYERS.map((p) =>
+          renderTile(p, timings[p.key], adhan, timings)
+        ).join("");
+        const lu = Array.isArray(timings.lastupdated) ? timings.lastupdated : null;
+        if (updatedEl && lu && lu[1]) {
+          updatedEl.textContent = "Schedule last updated: " + String(lu[1]);
+        }
+        if (loader) loader.classList.add("is-hidden");
+        grid.removeAttribute("hidden");
+      })
+      .catch(showFallback);
+  })();
 })();
