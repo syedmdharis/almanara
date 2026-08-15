@@ -277,6 +277,7 @@ summary:focus-visible,
   gap: 1rem;
   padding: 0.65rem 0.9rem;
   border-top: 1px solid rgba(212, 175, 55, 0.5);
+  border-radius: var(--radius-lg);
 }
 .nav-link {
   position: relative;
@@ -321,7 +322,7 @@ summary:focus-visible,
   backdrop-filter: blur(24px) saturate(160%);
   border: 1px solid transparent;
   background-clip: padding-box, border-box;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg), inset 0 1px 1px rgba(255, 255, 255, 0.9);
   opacity: 0;
   visibility: hidden;
