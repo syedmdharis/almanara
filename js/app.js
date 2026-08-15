@@ -105,6 +105,8 @@
 
     const PRAYERS = [
       { key: "fajr", label: "Fajr" },
+      { key: "sunrise", label: "Sunrise" },
+      { key: "duha", label: "Dhuha" },
       { key: "dhuhr", label: "Dhuhr" },
       { key: "asr", label: "Asr" },
       { key: "maghrib", label: "Maghrib" },
@@ -310,6 +312,7 @@
       const min = (v) => (v || 0) / 60;
       return {
         fajr: dfixHour(t.fajr + min(adj.fajr)),
+        sunrise: dfixHour(t.sunrise),
         dhuhr: dfixHour(t.dhuhr + min(adj.dhuhr)),
         asr: dfixHour(t.asr + min(adj.asr)),
         maghrib: dfixHour(t.maghrib + min(adj.maghrib)),
@@ -345,20 +348,15 @@
       return ((hh % 12) || 12) + ":" + String(mm).padStart(2, "0") + " " + ap;
     }
 
-    function renderTile(prayer, entry, adhanHours, data) {
+    function renderTile(prayer, entry, adhanHours) {
       /* Jumu'ah has no astronomical adhan — show the published khutbah/salah. */
       if (prayer.key === "jumuah") {
         const khutbah =
           Array.isArray(entry) && entry[0] === true
             ? String(entry[1] ?? "").trim()
             : "";
-        const j2 = Array.isArray(data.jumuah2) ? data.jumuah2 : null;
-        const salah =
-          j2 && j2[0] === true ? String(j2[1] ?? "").trim() : "";
         const khutbahTxt =
           khutbah && clockToMinutes(khutbah) != null ? khutbah : "1:10 PM";
-        const salahTxt =
-          salah && clockToMinutes(salah) != null ? salah : "2:00 PM";
         return (
           '<div class="prayer-tile prayer-tile--jumuah">' +
           '<p class="prayer-tile-name">' +
@@ -367,10 +365,20 @@
           '<p class="prayer-tile-row"><span>Khutbah</span><span>' +
           khutbahTxt +
           "</span></p>" +
-          '<p class="prayer-tile-row"><span>Salah</span><span>' +
-          salahTxt +
-          "</span></p>" +
           "</div></div>"
+        );
+      }
+
+      /* Sunrise & Dhuha have no adhan/iqama — show the single computed time. */
+      if (prayer.key === "sunrise" || prayer.key === "duha") {
+        const val = fmtClock(adhanHours[prayer.key]);
+        return (
+          '<div class="prayer-tile">' +
+          '<p class="prayer-tile-name">' +
+          prayer.label +
+          '</p><p class="prayer-tile-time">' +
+          val +
+          "</p></div>"
         );
       }
 
@@ -432,9 +440,16 @@
             timeZone: String(config.timeZone || "America/Chicago"),
           })
         );
+        /* Dhuha = Sunrise + published offset (default 10 min) — matches the app. */
+        const duhaEntry = Array.isArray(timings.duha) ? timings.duha : null;
+        const duhaOffset =
+          duhaEntry && /^\d+(\.\d+)?$/.test(String(duhaEntry[1] ?? ""))
+            ? parseFloat(duhaEntry[1])
+            : 10;
+        adhan.duha = dfixHour(adhan.sunrise + duhaOffset / 60);
 
         grid.innerHTML = PRAYERS.map((p) =>
-          renderTile(p, timings[p.key], adhan, timings)
+          renderTile(p, timings[p.key], adhan)
         ).join("");
         if (loader) loader.classList.add("is-hidden");
         grid.removeAttribute("hidden");
