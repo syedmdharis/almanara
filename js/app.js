@@ -100,7 +100,6 @@
     const grid = live.querySelector("[data-prayer-grid]");
     const loader = live.querySelector("[data-prayer-loader]");
     const fallback = live.querySelector("[data-prayer-fallback]");
-    const updatedEl = root.querySelector("[data-prayer-updated]");
     const DB_URL =
       "https://masjid-almanara-default-rtdb.firebaseio.com/conf_web.json";
 
@@ -361,7 +360,8 @@
         const salahTxt =
           salah && clockToMinutes(salah) != null ? salah : "2:00 PM";
         return (
-          '<div class="prayer-tile"><p class="prayer-tile-name">' +
+          '<div class="prayer-tile prayer-tile--jumuah">' +
+          '<p class="prayer-tile-name">' +
           prayer.label +
           '</p><div class="prayer-tile-rows">' +
           '<p class="prayer-tile-row"><span>Khutbah</span><span>' +
@@ -436,10 +436,6 @@
         grid.innerHTML = PRAYERS.map((p) =>
           renderTile(p, timings[p.key], adhan, timings)
         ).join("");
-        const lu = Array.isArray(timings.lastupdated) ? timings.lastupdated : null;
-        if (updatedEl && lu && lu[1]) {
-          updatedEl.textContent = "Schedule last updated: " + String(lu[1]);
-        }
         if (loader) loader.classList.add("is-hidden");
         grid.removeAttribute("hidden");
       })
